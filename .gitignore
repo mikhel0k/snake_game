@@ -1,0 +1,10 @@
+# Логины/пароли игроков (создаются при первом запуске игры)
+generated_players.json
+credentials.json
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env

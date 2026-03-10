@@ -1,0 +1,18 @@
+# Запуск сервера игры в контейнере (без бота для студентов).
+# Учётные данные: создай credentials.json через run_game.py локально, затем смонтируй.
+#
+# Запуск:
+#   docker compose up -d
+#
+# Свои логины/пароли: сгенерируй credentials.json локально (python run_game.py),
+# положи рядом с docker-compose.yml и раскомментируй блок volumes ниже.
+
+services:
+  snake-server:
+    build: .
+    image: snake-server
+    ports:
+      - "8002:8002"
+    # Раскомментируй и укажи путь к своему credentials.json:
+    # volumes:
+    #   - ./credentials.json:/app/credentials.json

@@ -1,0 +1,11 @@
+# Не включать в образ
+pack_for_students/
+.venv/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+*.md
+.env
+.venv
+venv/
