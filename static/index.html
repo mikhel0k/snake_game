@@ -166,6 +166,7 @@
       <div class="game-card">
         <canvas id="gameCanvas" class="game-canvas"></canvas>
         <p id="meta" class="meta"></p>
+        <p id="pingEl" class="meta" style="margin-top:4px;"></p>
       </div>
       <div class="scores-card">
         <h2>Очки и рейтинг</h2>
@@ -209,6 +210,14 @@
     const dashboardBody = document.getElementById('dashboardBody');
     const historyBody = document.getElementById('historyBody');
     const metaEl = document.getElementById('meta');
+    const pingEl = document.getElementById('pingEl');
+    function measurePing() {
+      if (!pingEl) return;
+      const t0 = performance.now();
+      fetch(API + '/ping', { cache: 'no-store' }).then(() => {
+        pingEl.textContent = 'Пинг: ' + Math.round(performance.now() - t0) + ' мс';
+      }).catch(() => { pingEl.textContent = 'Пинг: —'; });
+    }
 
     const BOX = 606;
     function getScale(state) {
@@ -238,6 +247,29 @@
     function getSnakeColor(p) {
       if ((p.id || '').indexOf('bot_') === 0) return COLORS.botSnake;
       return COLORS.snakes[hashForColor(p.id) % COLORS.snakes.length];
+    }
+    function getDisplayName(p) {
+      const n = (p.name && String(p.name).trim()) ? p.name.trim() : '';
+      if (!n || n.toLowerCase() === 'player') return p.id || '';
+      return n;
+    }
+    function buildUniqueColorMap(playersList) {
+      const map = {};
+      const used = {};
+      const list = (playersList || []).slice();
+      for (let i = 0; i < list.length; i++) {
+        const p = list[i];
+        const id = p.id || ('p' + i);
+        if ((id || '').indexOf('bot_') === 0) { map[id] = COLORS.botSnake; continue; }
+        let idx = hashForColor(id) % COLORS.snakes.length;
+        for (let k = 0; k < COLORS.snakes.length; k++) {
+          const c = COLORS.snakes[idx];
+          if (!used[c]) { used[c] = true; map[id] = c; break; }
+          idx = (idx + 1) % COLORS.snakes.length;
+        }
+        if (map[id] === undefined) map[id] = COLORS.snakes[hashForColor(id) % COLORS.snakes.length];
+      }
+      return map;
     }
 
     function renderState(state) {
@@ -277,8 +309,9 @@
       }
 
       const players = state.players || [];
+      const colorMap = buildUniqueColorMap(players);
       players.forEach((p) => {
-        const color = getSnakeColor(p);
+        const color = colorMap[p.id] || getSnakeColor(p);
         for (let i = 0; i < (p.body || []).length; i++) {
           const b = p.body[i];
           ctx.fillStyle = i === 0 ? '#fff' : color;
@@ -290,9 +323,9 @@
       const levels = [1, 2, 3, 4, 5];
       dashboardHead.innerHTML = '<th>#</th><th>Игрок</th><th class="score-num">Раунд</th>' + levels.map(l => '<th>Ур.' + l + '</th>').join('') + '<th class="score-num total-col">Всего</th><th>Статус</th>';
       dashboardBody.innerHTML = sorted.map((p, idx) => {
-        const c = getSnakeColor(p);
+        const c = colorMap[p.id] || getSnakeColor(p);
         const alive = p.alive !== false;
-        const name = ((p.name && String(p.name).trim()) ? p.name : p.id).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const name = getDisplayName(p).replace(/</g, '&lt;').replace(/>/g, '&gt;');
         const ls = p.level_scores || {};
         const cells = levels.map(l => '<td>' + (ls[l] ?? ls[String(l)] ?? '—') + '</td>').join('');
         return '<tr><td>' + (idx + 1) + '</td><td><span class="dot" style="background:' + c + '"></span>' + name + '</td><td class="score-num">' + (p.score || 0) + '</td>' + cells + '<td class="score-num total-col">' + (p.total_weighted ?? 0) + '</td><td class="' + (alive ? 'alive' : 'dead') + '">' + (alive ? 'Жив' : 'Погиб') + '</td></tr>';
@@ -307,7 +340,7 @@
         historyBody.innerHTML = last.map((h, idx) => {
           const playersHist = h.players || [];
           const winner = playersHist.length ? playersHist[0] : null;
-          const wName = winner ? ((winner.name && String(winner.name).trim()) ? winner.name : winner.id) : '—';
+          const wName = winner ? (winner.name && String(winner.name).trim() && winner.name.toLowerCase() !== 'player' ? winner.name : winner.id) : '—';
           const wScore = winner ? (winner.score || 0) : '—';
           return '<tr><td>' + (idx + 1) + '</td><td>Ур.' + (h.level || 1) + '</td><td>' + wName + '</td><td class="score-num">' + wScore + '</td></tr>';
         }).join('');
@@ -340,8 +373,33 @@
       };
     })();
     var lastState = null;
-    setInterval(fetchSpectate, 250);
+    var wsSpectate = null;
+    var pollInterval = setInterval(fetchSpectate, 250);
+    function connectSpectateWS() {
+      var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      var url = proto + '//' + location.host + '/ws/spectate';
+      try {
+        wsSpectate = new WebSocket(url);
+        wsSpectate.onmessage = function(ev) {
+          try {
+            var state = JSON.parse(ev.data);
+            lastState = state;
+            renderState(state);
+          } catch (_) {}
+        };
+        wsSpectate.onopen = function() {
+          if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+        };
+        wsSpectate.onclose = wsSpectate.onerror = function() {
+          wsSpectate = null;
+          if (!pollInterval) pollInterval = setInterval(fetchSpectate, 250);
+        };
+      } catch (_) {}
+    }
+    connectSpectateWS();
     fetchSpectate();
+    setInterval(measurePing, 3000);
+    setTimeout(measurePing, 500);
   </script>
 </body>
 </html>

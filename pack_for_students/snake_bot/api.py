@@ -1,12 +1,6 @@
 """
-Слой работы с API сервера: запросы, получение мира, отправка хода.
-
-Этот файл — только общение с сервером. Никакой логики «куда идти» здесь нет.
-Используются config.BASE_URL, config.PLAYER_ID, config.PASSWORD, config.NAME.
-
-Интерфейс:
-  get_world() -> dict | None   — GET /world, состояние мира (me, apples, snakes, walls, tick, sleep_until_next_tick…)
-  step(direction) -> dict|None — POST /step, при успехе возвращает ответ (ok, sleep_until_next_tick), иначе None
+Вспомогательные HTTP-запросы (для тестов или своих скриптов). Игра идёт по WebSocket (/ws/play).
+GET /world и POST /step на сервере возвращают 410 — используйте WebSocket. Функции get_world/step оставлены для совместимости.
 """
 import json
 import urllib.error

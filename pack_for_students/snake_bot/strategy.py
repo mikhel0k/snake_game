@@ -77,6 +77,55 @@ def center_of_field(view):
     return (cx, cy)
 
 
+def nearest_reachable_apple(view):
+    """
+    Ближайшее хорошее яблоко, до которого есть путь (BFS). Если такого нет — None.
+    Сначала проверяем золотые, потом обычные; среди них берём ближайшее по длине пути.
+    """
+    hx, hy = view.my_head
+    best_apple = None
+    best_path_len = 999999
+    # Сначала золотые, потом все хорошие
+    candidates = []
+    for a in view.good_apples or []:
+        if a.get("type") == "golden":
+            candidates.append(a)
+    for a in view.good_apples or []:
+        if a.get("type") != "golden":
+            candidates.append(a)
+    for a in candidates:
+        tx, ty = a["x"], a["y"]
+        if (tx, ty) == (hx, hy):
+            return (tx, ty)
+        path_len = _bfs_path_length(view, (hx, hy), (tx, ty))
+        if path_len is not None and path_len < best_path_len:
+            best_path_len = path_len
+            best_apple = a
+    if best_apple is None:
+        return None
+    return (best_apple["x"], best_apple["y"])
+
+
+def _bfs_path_length(view, start, target):
+    """Длина кратчайшего пути от start до target или None, если недостижимо."""
+    if start == target:
+        return 0
+    q = deque()
+    q.append((start, 0))
+    visited = {start}
+    while len(q) > 0:
+        (cx, cy), dist = q.popleft()
+        if (cx, cy) == target:
+            return dist
+        for neighbor in view.safe_neighbors(cx, cy):
+            n = (neighbor[0], neighbor[1])
+            if n in visited:
+                continue
+            visited.add(n)
+            q.append((n, dist + 1))
+    return None
+
+
 # =============================================================================
 # ПОИСК НАПРАВЛЕНИЯ К ЦЕЛИ — функции (view, target) -> direction | None
 # =============================================================================
@@ -227,16 +276,16 @@ def run_pipeline(view, goal_selectors, pathfinder, fallback):
 # =============================================================================
 # КОНФИГУРАЦИЯ И ТОЧКА ВХОДА
 # =============================================================================
-# По умолчанию бот только уворачивается (цели нет, простой путь, простой запасной ход).
-# Твоя задача: подставить свои цели (например nearest_apple), обход препятствий (bfs_first_step)
-# и при желании свой fallback (prefer_more_exits или свою функцию).
+# Умный алгоритм по умолчанию: цель — ближайшее достижимое яблоко (золотое приоритетнее),
+# путь — BFS (обход стен и змеек), запасной ход — в сторону с большим числом выходов (избегаем тупиков).
+# Можно заменить на no_goal / step_toward_manhattan / straight_then_random для минимального бота.
 
-# Список функций выбора цели; первая ненулевая — цель. Сейчас нет цели (no_goal).
-DEFAULT_GOAL_SELECTORS = [no_goal]
-# Функция (view, target) -> direction | None. Сейчас — шаг по прямой (стены не обходим). Для обхода подставь bfs_first_step.
-DEFAULT_PATHFINDER = step_toward_manhattan
-# Функция (view) -> direction. Когда цели нет или путь не найден. Сейчас — прямо или случайно.
-DEFAULT_FALLBACK = straight_then_random
+# Цель: сначала золотое/ближайшее достижимое по пути (BFS), иначе просто ближайшее по прямой.
+DEFAULT_GOAL_SELECTORS = [nearest_reachable_apple, nearest_golden_apple, nearest_apple]
+# Путь к цели — поиск в ширину, обходим стены и тела.
+DEFAULT_PATHFINDER = bfs_first_step
+# Запасной ход — в клетку с большим числом безопасных соседей, чтобы не застрять.
+DEFAULT_FALLBACK = prefer_more_exits
 
 
 def choose_direction(world):

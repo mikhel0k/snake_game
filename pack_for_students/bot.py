@@ -8,8 +8,7 @@
   PASSWORD  — пароль (обязателен)
   NAME      — отображаемое имя (опционально)
 
-Вся логика в пакете snake_bot: config (настройки, парсинг argv), api (GET /world, POST /step),
-world (WorldView), logic (цели, путь, fallback), strategy (конвейер), main (цикл run).
+Вся логика в пакете snake_bot. Игра только по WebSocket (ws://.../ws/play). Нужно: pip install websockets.
 """
 from snake_bot.main import run
 

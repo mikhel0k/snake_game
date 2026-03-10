@@ -320,6 +320,7 @@
             </table>
           </div>
           <p class="meta" id="meta">Игра не запущена</p>
+          <p class="meta" id="pingEl" style="margin-top:4px;"></p>
         </div>
       </div>
 
@@ -362,6 +363,30 @@
     function getSnakeColor(p) {
       if ((p.id || '').indexOf('bot_') === 0) return colors.botSnake;
       return colors.snakes[hashForColor(p.id) % colors.snakes.length];
+    }
+    function getDisplayName(p) {
+      var n = (p.name && String(p.name).trim()) ? p.name.trim() : '';
+      if (!n || n.toLowerCase() === 'player') return p.id || '';
+      return n;
+    }
+    function buildUniqueColorMap(playersList) {
+      var map = {};
+      var used = {};
+      var list = (playersList || []).slice();
+      for (var i = 0; i < list.length; i++) {
+        var p = list[i];
+        var id = p.id || ('p' + i);
+        if ((id || '').indexOf('bot_') === 0) { map[id] = colors.botSnake; continue; }
+        var baseIdx = hashForColor(id) % colors.snakes.length;
+        var idx = baseIdx;
+        for (var k = 0; k < colors.snakes.length; k++) {
+          var c = colors.snakes[idx];
+          if (!used[c]) { used[c] = true; map[id] = c; break; }
+          idx = (idx + 1) % colors.snakes.length;
+        }
+        if (map[id] === undefined) map[id] = colors.snakes[baseIdx];
+      }
+      return map;
     }
     var lastState = null;
 
@@ -482,16 +507,31 @@
       }
     })();
 
+    function measurePing() {
+      var el = document.getElementById('pingEl');
+      if (!el) return;
+      var t0 = performance.now();
+      fetch('/ping', { cache: 'no-store' }).then(function() {
+        var ms = Math.round(performance.now() - t0);
+        el.textContent = 'Пинг: ' + ms + ' мс';
+      }).catch(function() {
+        el.textContent = 'Пинг: —';
+      });
+    }
     if (window.__adminCookie) {
       document.getElementById('loginBox').style.display = 'none';
       document.getElementById('dashboard').classList.add('on');
       poll();
+      setInterval(measurePing, 3000);
+      setTimeout(measurePing, 500);
     } else {
       fetch('/admin/state', { credentials: 'include' }).then(function(r) {
         if (r.ok) {
           document.getElementById('loginBox').style.display = 'none';
           document.getElementById('dashboard').classList.add('on');
           poll();
+          setInterval(measurePing, 3000);
+          setTimeout(measurePing, 500);
         }
       }).catch(function(){});
     }
@@ -537,8 +577,9 @@
         ctx.fillRect(offX + a.x * cell, offY + a.y * cell, cell + 0.5, cell + 0.5);
       });
       var playersList = state.players || [];
+      var colorMap = buildUniqueColorMap(playersList);
       playersList.forEach(function(p){
-        var col = getSnakeColor(p);
+        var col = colorMap[p.id] || getSnakeColor(p);
         (p.body||[]).forEach(function(b,j){
           ctx.fillStyle = j===0 ? '#fff' : col;
           ctx.fillRect(offX + b.x * cell, offY + b.y * cell, cell + 0.5, cell + 0.5);
@@ -551,9 +592,9 @@
         tbody.innerHTML = '<tr><td colspan="10" class="empty-msg">Нет игроков</td></tr>';
       } else {
         tbody.innerHTML = players.map(function(p,i){
-          var c = getSnakeColor(p);
+          var c = colorMap[p.id] || getSnakeColor(p);
           var alive = p.alive !== false;
-          var name = ((p.name && String(p.name).trim()) ? p.name : p.id).replace(/</g,'&lt;').replace(/>/g,'&gt;');
+          var name = getDisplayName(p).replace(/</g,'&lt;').replace(/>/g,'&gt;');
           var ls = p.level_scores || {};
           var l1 = ls[1] ?? ls['1'] ?? '—';
           var l2 = ls[2] ?? ls['2'] ?? '—';
@@ -574,7 +615,7 @@
         var last = hist.slice(-10).reverse();
         historyBody.innerHTML = last.map(function(h, idx){
           var winner = (h.players && h.players.length > 0) ? h.players[0] : null;
-          var wName = winner ? ((winner.name && String(winner.name).trim()) ? winner.name : winner.id) : '—';
+          var wName = winner ? (winner.name && String(winner.name).trim() && winner.name.toLowerCase() !== 'player' ? winner.name : winner.id) : '—';
           var wScore = winner ? (winner.score || 0) : '—';
           return '<tr><td>'+(idx+1)+'</td><td>Ур.'+(h.level||1)+'</td><td>'+wName+'</td><td class="score-num">'+wScore+'</td></tr>';
         }).join('');

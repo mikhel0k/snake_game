@@ -8,14 +8,13 @@ import asyncio
 import json
 import os
 import secrets
+import time
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Header, Request, Form
+from fastapi import FastAPI, HTTPException, Header, Request, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-
 from game import GameState, Direction
 
 
@@ -75,16 +74,58 @@ def _save_generated_players(players: list[dict]) -> None:
         pass
 
 
+async def broadcast_after_tick(app: FastAPI) -> None:
+    """Разослать состояние игры всем подключённым по WebSocket после тика."""
+    ws_players = getattr(app.state, "ws_players", {}) or {}
+    ws_spectators = getattr(app.state, "ws_spectators", set()) or set()
+    for player_id, ws in list(ws_players.items()):
+        try:
+            data = game.get_world_around(player_id, WORLD_VIEW_RADIUS)
+            if "error" in data:
+                continue
+            data["game_started"] = game.game_started
+            data["game_ended"] = game.game_ended
+            data["sleep_until_next_tick"] = await game.get_sleep_until_next_tick()
+            await ws.send_json(data)
+        except Exception:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+            ws_players.pop(player_id, None)
+    for ws in list(ws_spectators):
+        try:
+            await ws.send_json(game.get_state())
+        except Exception:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+            ws_spectators.discard(ws)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.admin_token = None
+    app.state.ws_players = {}
+    app.state.ws_spectators = set()
     loaded = _load_generated_players()
     app.state.current_players = loaded
     app.state.players_initialized = len(loaded) > 0  # один раз создали — дальше только уровень
+
     async def game_loop():
+        TICK_TIMEOUT = 2.0  # ждём ходы от всех; если не все за 2 сек — тик по таймауту
+        POLL_INTERVAL = 0.02
+        next_tick_at = time.monotonic() + TICK_TIMEOUT
         while True:
-            await asyncio.sleep(0.25)  # 4 тика в секунду
-            await game.do_tick()
+            await asyncio.sleep(POLL_INTERVAL)
+            now = time.monotonic()
+            all_ready = await game.all_players_ready_for_tick()
+            if all_ready or now >= next_tick_at:
+                await game.do_tick()
+                next_tick_at = now + TICK_TIMEOUT
+                await broadcast_after_tick(app)
+
     task = asyncio.create_task(game_loop())
     yield
     task.cancel()
@@ -95,10 +136,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Snake API", lifespan=lifespan)
-
-
-class DirectionRequest(BaseModel):
-    direction: str
 
 
 WORLD_VIEW_RADIUS = 25
@@ -120,55 +157,83 @@ def _check_admin(request: Request, password: str) -> bool:
 
 
 @app.get("/world")
-async def get_world(
-    request: Request,
-    player_id: str,
-    password: str,
-    name: str = "Player",
-):
-    """Мир в радиусе 25 от головы. Требуется player_id и password (выдаются админом при старте игры)."""
-    players = _get_current_players(request)
-    if not _check_player(players, player_id, password):
-        raise HTTPException(status_code=401, detail="Invalid login or password")
-    await game.set_player_name(player_id, name)
-    if not game.game_started:
-        return {"game_started": False, "message": "Ожидание старта от админа"}
-    data = game.get_world_around(player_id, WORLD_VIEW_RADIUS)
-    if "error" in data:
-        raise HTTPException(status_code=404, detail=data["error"])
-    data["game_started"] = True
-    data["sleep_until_next_tick"] = await game.get_sleep_until_next_tick()
-    return data
+async def get_world_deprecated():
+    """Игра только по WebSocket. Подключайтесь к ws://HOST/ws/play?player_id=...&password=..."""
+    raise HTTPException(status_code=410, detail="Use WebSocket: /ws/play?player_id=...&password=...")
 
 
 @app.post("/step")
-async def step(
-    request: Request,
-    player_id: str,
-    password: str,
-    req: DirectionRequest,
-):
-    """Ход. Только для залогиненного игрока, только когда игра запущена."""
-    players = _get_current_players(request)
-    if not _check_player(players, player_id, password):
-        raise HTTPException(status_code=401, detail="Invalid login or password")
-    if not game.game_started:
-        raise HTTPException(status_code=400, detail="Game not started")
-    try:
-        d = Direction(req.direction.lower())
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid direction: up/down/left/right")
-    ok = await game.set_direction(player_id, d)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Player not found or dead")
-    sleep_until = await game.get_sleep_until_next_tick()
-    return {"ok": True, "sleep_until_next_tick": sleep_until}
+async def step_deprecated():
+    """Игра только по WebSocket. Подключайтесь к /ws/play и шлите JSON {\"direction\": \"up\"}."""
+    raise HTTPException(status_code=410, detail="Use WebSocket: /ws/play")
+
+
+@app.get("/ping")
+async def ping():
+    """Проверка доступности и замер пинга. Без авторизации. Клиент замеряет RTT по времени ответа."""
+    return {"ok": True}
 
 
 @app.get("/spectate")
 async def spectate():
-    """Полное состояние для наблюдателей (без авторизации)."""
+    """Полное состояние для наблюдателей (без авторизации). Для пуша в реальном времени — WebSocket /ws/spectate."""
     return game.get_state()
+
+
+@app.websocket("/ws/play")
+async def ws_play(websocket: WebSocket):
+    """
+    Игрок подключается по WebSocket: в query player_id, password, name (опц.).
+    Сервер пушит состояние после каждого тика. Клиент шлёт JSON {"direction": "up"} для хода.
+    """
+    await websocket.accept()
+    player_id = websocket.query_params.get("player_id") or ""
+    password = websocket.query_params.get("password") or ""
+    name = (websocket.query_params.get("name") or "").strip() or "Player"
+    players = getattr(websocket.app.state, "current_players", []) or []
+    if not _check_player(players, player_id, password):
+        await websocket.close(code=4001)
+        return
+    await game.set_player_name(player_id, name)
+    ws_players = websocket.app.state.ws_players
+    ws_players[player_id] = websocket
+    try:
+        data = game.get_world_around(player_id, WORLD_VIEW_RADIUS)
+        if "error" not in data:
+            data["game_started"] = game.game_started
+            data["game_ended"] = game.game_ended
+            data["sleep_until_next_tick"] = await game.get_sleep_until_next_tick()
+            await websocket.send_json(data)
+        while True:
+            msg = await websocket.receive_text()
+            try:
+                obj = json.loads(msg)
+                d = (obj.get("direction") or "").strip().lower()
+                if d in ("up", "down", "left", "right"):
+                    direction = Direction(d)
+                    await game.set_direction(player_id, direction)
+            except (json.JSONDecodeError, ValueError):
+                pass
+    except WebSocketDisconnect:
+        pass
+    finally:
+        ws_players.pop(player_id, None)
+
+
+@app.websocket("/ws/spectate")
+async def ws_spectate(websocket: WebSocket):
+    """Наблюдатель: подключается без авторизации, получает полное состояние после каждого тика."""
+    await websocket.accept()
+    ws_spectators = websocket.app.state.ws_spectators
+    ws_spectators.add(websocket)
+    try:
+        await websocket.send_json(game.get_state())
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        ws_spectators.discard(websocket)
 
 
 def _admin_password(request: Request, x_admin_password: str | None = Header(None)):

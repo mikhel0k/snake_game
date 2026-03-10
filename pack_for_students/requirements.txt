@@ -1,0 +1,2 @@
+# Для режима WebSocket (config.USE_WEBSOCKET = True)
+websockets>=12.0

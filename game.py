@@ -1,6 +1,6 @@
 """
 Игровая логика: змейка, яблоки, поле.
-4 тика в секунду, игра длится 3 минуты (720 тиков).
+2 тика в секунду (интервал 0.5 сек), игра длится 3 минуты (360 тиков).
 Уровни 1–5 и start_game — в levels.py и через start_game().
 """
 import asyncio
@@ -30,9 +30,9 @@ class Direction(str, Enum):
 
 
 RESPAWN_AFTER_TICKS = 5
-TICKS_PER_SECOND = 4
+TICKS_PER_SECOND = 2  # 1 тик каждые 0.5 сек (меньше нагрузки при пинге)
 GAME_DURATION_SECONDS = 3 * 60  # 3 минуты
-GAME_DURATION_TICKS = TICKS_PER_SECOND * GAME_DURATION_SECONDS  # 720
+GAME_DURATION_TICKS = TICKS_PER_SECOND * GAME_DURATION_SECONDS  # 360
 # Множитель для общего счёта: чем сложнее уровень, тем больше весит результат
 LEVEL_MULTIPLIERS = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5}
 
@@ -93,6 +93,8 @@ class GameState:
     # История раундов: последние игры (уровень, тик окончания, результаты игроков)
     _game_history: list[dict] = field(default_factory=list)
     _game_history_max: int = 50
+    # Игроки, уже приславшие ход для следующего тика (сбрасывается после do_tick)
+    _ready_for_tick: set[str] = field(default_factory=set)
 
     def _random_empty_cell(self, exclude: set[tuple[int, int]]) -> Optional[tuple[int, int]]:
         for _ in range(50_000):
@@ -268,6 +270,9 @@ class GameState:
                 p.next_direction = direction
             elif direction == Direction.RIGHT and p.direction != Direction.LEFT:
                 p.next_direction = direction
+            else:
+                pass  # оставляем текущее направление (ход всё равно считаем присланным)
+            self._ready_for_tick.add(player_id)
             return True
 
     def _move_head(self, head: tuple[int, int], d: Direction) -> tuple[int, int]:
@@ -338,10 +343,25 @@ class GameState:
             self.game_ended = False
             return True
 
+    async def all_players_ready_for_tick(self) -> bool:
+        """Все живые игроки прислали ход (боты считаются готовыми)."""
+        async with self._lock:
+            if not self.game_started or self.game_ended:
+                return True
+            for p in self.players.values():
+                if not p.alive:
+                    continue
+                if p.is_bot:
+                    continue
+                if p.player_id not in self._ready_for_tick:
+                    return False
+            return True
+
     async def do_tick(self):
         async with self._lock:
             if not self.game_started or self.game_ended:
                 return
+            self._ready_for_tick.clear()
             self._last_tick_time = time.monotonic()
             self.tick += 1
             if self.tick > GAME_DURATION_TICKS:
@@ -426,12 +446,19 @@ class GameState:
                 p.name = str(name).strip()
 
     async def get_sleep_until_next_tick(self) -> float:
-        """Секунды до следующего тика (0 если игра не идёт). Клиент может sleep на это время."""
+        """
+        Секунды до следующего тика. Клиент спит не дольше этого времени.
+        Тик бывает когда все походили или по таймауту (2 сек), поэтому ограничиваем сон 0.25 сек —
+        иначе бот мог бы проспать ранний тик (все походили через 0.2 сек, а ему сказали «спи 1 сек»).
+        """
+        MAX_SLEEP = 0.25  # не даём клиенту спать дольше — тик может случиться раньше таймаута
         async with self._lock:
             if not self.game_started or self.game_ended or self._last_tick_time == 0:
-                return 1.0 / TICKS_PER_SECOND
+                return MAX_SLEEP
             elapsed = time.monotonic() - self._last_tick_time
-            return max(0.0, (1.0 / TICKS_PER_SECOND) - elapsed)
+            # макс. до таймаута 2 сек — клиенту не спать дольше этого и не дольше MAX_SLEEP
+            until_timeout = max(0.0, 2.0 - elapsed)
+            return min(until_timeout, MAX_SLEEP)
 
     def get_world_around(self, player_id: str, radius: int = 50) -> dict:
         """
