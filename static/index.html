@@ -121,6 +121,7 @@
     .scores-card .total-col { font-weight: 700; color: var(--success); }
     .scores-card .alive { color: var(--success); font-weight: 500; }
     .scores-card .dead { color: var(--danger); opacity: 0.9; font-weight: 500; }
+    .history-results { white-space: normal; word-break: break-word; max-width: 420px; font-size: 0.85rem; }
     .scores-card .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 10px; vertical-align: middle; }
 
     .rules-card {
@@ -181,15 +182,14 @@
 
     <div class="main-row history-row" style="display:none;" id="historyRow">
       <div class="scores-card">
-        <h2>История игр</h2>
+        <h2>История игр (результаты — кто сколько скушал)</h2>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>#</th>
                 <th>Уровень</th>
-                <th>Победитель</th>
-                <th class="score-num">Очки</th>
+                <th>Результаты раунда</th>
               </tr>
             </thead>
             <tbody id="historyBody"></tbody>
@@ -331,18 +331,19 @@
         return '<tr><td>' + (idx + 1) + '</td><td><span class="dot" style="background:' + c + '"></span>' + name + '</td><td class="score-num">' + (p.score || 0) + '</td>' + cells + '<td class="score-num total-col">' + (p.total_weighted ?? 0) + '</td><td class="' + (alive ? 'alive' : 'dead') + '">' + (alive ? 'Жив' : 'Погиб') + '</td></tr>';
       }).join('');
 
-      // История игр (последние 10 раундов)
+      // История игр: кто сколько скушал по каждому раунду
       const hist = state.game_history || [];
       if (!hist.length) {
-        historyBody.innerHTML = '<tr><td colspan="4" class="empty-msg">История игр пока пуста</td></tr>';
+        historyBody.innerHTML = '<tr><td colspan="3" class="empty-msg">История игр пока пуста</td></tr>';
       } else {
         const last = hist.slice(-10).reverse();
         historyBody.innerHTML = last.map((h, idx) => {
-          const playersHist = h.players || [];
-          const winner = playersHist.length ? playersHist[0] : null;
-          const wName = winner ? (winner.name && String(winner.name).trim() && winner.name.toLowerCase() !== 'player' ? winner.name : winner.id) : '—';
-          const wScore = winner ? (winner.score || 0) : '—';
-          return '<tr><td>' + (idx + 1) + '</td><td>Ур.' + (h.level || 1) + '</td><td>' + wName + '</td><td class="score-num">' + wScore + '</td></tr>';
+          const results = (h.players || []).map((pl, i) => {
+            const nm = (pl.name && String(pl.name).trim() && pl.name.toLowerCase() !== 'player') ? pl.name : (pl.id || '—');
+            return (i + 1) + '. ' + nm + ' — ' + (pl.score ?? 0);
+          }).join('; ');
+          const safe = (results || '—').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          return '<tr><td>' + (idx + 1) + '</td><td>Ур.' + (h.level || 1) + '</td><td class="history-results">' + safe + '</td></tr>';
         }).join('');
       }
 

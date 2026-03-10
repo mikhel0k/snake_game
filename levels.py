@@ -87,3 +87,21 @@ LEVELS: dict[int, LevelConfig] = {
     4: _make_level(4, 87, 87),
     5: _make_level(5, 100, 100),
 }
+
+
+def get_level_config(
+    level: int,
+    grid_width: int | None = None,
+    grid_height: int | None = None,
+    obstacles_override: int | None = None,
+) -> LevelConfig:
+    """Конфиг уровня; при указании grid_width/grid_height — кастомный размер, obstacles_override — число стен."""
+    base = LEVELS.get(level, LEVELS[1])
+    w = grid_width if grid_width is not None else base["grid_width"]
+    h = grid_height if grid_height is not None else base["grid_height"]
+    w = max(10, min(150, w))
+    h = max(10, min(150, h))
+    cfg = _make_level(level, w, h)
+    if obstacles_override is not None:
+        cfg["obstacles"] = max(0, min(2000, obstacles_override))
+    return cfg

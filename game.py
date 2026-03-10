@@ -4,13 +4,15 @@
 Уровни 1–5 и start_game — в levels.py и через start_game().
 """
 import asyncio
+import json
+import os
 import random
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from levels import LEVELS
+from levels import LEVELS, get_level_config
 
 INITIAL_SNAKE_LEN = 3
 
@@ -36,6 +38,12 @@ GAME_DURATION_TICKS = TICKS_PER_SECOND * GAME_DURATION_SECONDS  # 360
 # Множитель для общего счёта: чем сложнее уровень, тем больше весит результат
 LEVEL_MULTIPLIERS = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5}
 
+# Файл для сохранения истории игр (кто сколько скушал по раундам)
+GAME_HISTORY_FILE = os.environ.get(
+    "GAME_HISTORY_FILE",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "game_results.json"),
+)
+
 
 @dataclass
 class Player:
@@ -55,9 +63,10 @@ class Player:
         return self.body[0] if self.body else (0, 0)
 
 
-def make_walls_for_level(level: int) -> set[tuple[int, int]]:
-    """Рамка по краям + случайные препятствия по конфигу уровня. Размер поля из конфига."""
-    cfg = LEVELS.get(level, LEVELS[1])
+def make_walls_for_level(level: int, cfg: Optional[dict] = None) -> set[tuple[int, int]]:
+    """Рамка по краям + случайные препятствия. Если передан cfg — размер и число стен из него."""
+    if cfg is None:
+        cfg = LEVELS.get(level, LEVELS[1])
     wd, ht = cfg["grid_width"], cfg["grid_height"]
     n = cfg["obstacles"]
     w = set()
@@ -95,6 +104,10 @@ class GameState:
     _game_history_max: int = 50
     # Игроки, уже приславшие ход для следующего тика (сбрасывается после do_tick)
     _ready_for_tick: set[str] = field(default_factory=set)
+    # Длительность раунда в тиках (задаётся при старте; по умолчанию 3 мин)
+    _duration_ticks: int = GAME_DURATION_TICKS
+    # Конфиг уровня для спавна яблок (при кастомной карте)
+    _current_level_cfg: Optional[dict] = None
 
     def _random_empty_cell(self, exclude: set[tuple[int, int]]) -> Optional[tuple[int, int]]:
         for _ in range(50_000):
@@ -106,7 +119,7 @@ class GameState:
 
     def spawn_apples(self):
         """Доводим количество яблок/бафов до минимума по конфигу уровня. Если из-за смертей стало больше — не трогаем."""
-        cfg = LEVELS.get(self.level, LEVELS[1])
+        cfg = self._current_level_cfg or LEVELS.get(self.level, LEVELS[1])
         occupied = set(self.apples.keys())
         for p in self.players.values():
             if p.alive:
@@ -167,6 +180,31 @@ class GameState:
         self._game_history.append(entry)
         if len(self._game_history) > self._game_history_max:
             self._game_history = self._game_history[-self._game_history_max:]
+        self._save_game_history()
+
+    def _save_game_history(self) -> None:
+        """Сохранить историю игр в файл (кто сколько скушал по раундам)."""
+        path = GAME_HISTORY_FILE
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self._game_history, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def load_game_history(self) -> None:
+        """Загрузить историю игр из файла при старте сервера."""
+        path = GAME_HISTORY_FILE
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                self._game_history = data[-self._game_history_max:]
+        except Exception:
+            pass
 
     def _opposite_direction(self, d: Direction) -> Direction:
         if d == Direction.UP:
@@ -299,8 +337,16 @@ class GameState:
                 dropped += 1
         p.score = max(0, p.score - dropped)
 
-    async def start_game(self, level: int, player_ids: list[str]) -> bool:
-        """Запуск (или перезапуск) раунда: уровень, стены, спавн всех игроков."""
+    async def start_game(
+        self,
+        level: int,
+        player_ids: list[str],
+        grid_width: Optional[int] = None,
+        grid_height: Optional[int] = None,
+        obstacles: Optional[int] = None,
+        duration_seconds: Optional[float] = None,
+    ) -> bool:
+        """Запуск раунда. Опционально: размер карты (grid_width, grid_height), число стен (obstacles), длительность в секундах."""
         async with self._lock:
             old_level = self.level
             for pid, p in list(self.players.items()):
@@ -314,11 +360,18 @@ class GameState:
                     for l in range(1, 6)
                 )
             self.level = max(1, min(5, level))
-            cfg = LEVELS.get(self.level, LEVELS[1])
+            cfg = get_level_config(self.level, grid_width, grid_height, obstacles)
+            self._current_level_cfg = cfg
             self.width = cfg["grid_width"]
             self.height = cfg["grid_height"]
-            self.walls = make_walls_for_level(self.level)
+            self._duration_ticks = (
+                int(duration_seconds * TICKS_PER_SECOND)
+                if duration_seconds is not None and duration_seconds > 0
+                else GAME_DURATION_TICKS
+            )
+            self.walls = make_walls_for_level(self.level, cfg)
             self.apples.clear()
+            saved_names = {p.player_id: p.name for p in self.players.values()}
             self.players.clear()
             self.tick = 0
             occupied = set(self.walls)
@@ -329,9 +382,10 @@ class GameState:
                 start = self._random_empty_cell(occupied)
                 if start:
                     is_bot = pid.startswith("bot_")
+                    name = saved_names.get(pid, pid)
                     self.players[pid] = Player(
                         player_id=pid,
-                        name=pid,
+                        name=name,
                         body=self._spawn_body(start),
                         direction=Direction.RIGHT,
                         next_direction=Direction.RIGHT,
@@ -364,7 +418,7 @@ class GameState:
             self._ready_for_tick.clear()
             self._last_tick_time = time.monotonic()
             self.tick += 1
-            if self.tick > GAME_DURATION_TICKS:
+            if self.tick > self._duration_ticks:
                 # Игра закончилась по таймеру — фиксируем результаты раунда один раз
                 self._finalize_round()
                 self.game_ended = True
@@ -523,7 +577,7 @@ class GameState:
             "height": self.height,
             "level": self.level,
             "game_ended": self.game_ended,
-            "game_duration_ticks": GAME_DURATION_TICKS,
+            "game_duration_ticks": self._duration_ticks,
             "level_multipliers": LEVEL_MULTIPLIERS,
             "me": me_data,
             "walls": walls,
@@ -559,7 +613,7 @@ class GameState:
             "level": self.level,
             "game_started": self.game_started,
             "game_ended": self.game_ended,
-            "game_duration_ticks": GAME_DURATION_TICKS,
+            "game_duration_ticks": self._duration_ticks,
             "level_multipliers": LEVEL_MULTIPLIERS,
             "apples": [{"x": x, "y": y, "type": t} for (x, y), t in self.apples.items()],
             "walls": [{"x": x, "y": y} for x, y in self.walls],

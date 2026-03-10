@@ -8,9 +8,17 @@
   PASSWORD  — пароль (обязателен)
   NAME      — отображаемое имя (опционально)
 
-Вся логика в пакете snake_bot. Игра только по WebSocket (ws://.../ws/play). Нужно: pip install websockets.
+Игра только по WebSocket (ws://.../ws/play). Нужно: pip install websockets.
 """
-from snake_bot.main import run
+import sys
+from pathlib import Path
+
+# Чтобы при запуске python bot.py из pack_for_students находился пакет pack_for_students
+_root = Path(__file__).resolve().parent.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+
+from pack_for_students.main import run
 
 if __name__ == "__main__":
     run()

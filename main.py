@@ -112,6 +112,7 @@ async def lifespan(app: FastAPI):
     loaded = _load_generated_players()
     app.state.current_players = loaded
     app.state.players_initialized = len(loaded) > 0  # один раз создали — дальше только уровень
+    game.load_game_history()  # загрузить сохранённые результаты игр (кто сколько скушал)
 
     async def game_loop():
         TICK_TIMEOUT = 2.0  # ждём ходы от всех; если не все за 2 сек — тик по таймауту
@@ -298,11 +299,26 @@ async def admin_start(request: Request):
     players = getattr(request.app.state, "current_players", []) or []
     initialized = getattr(request.app.state, "players_initialized", False)
 
+    grid_width = None
+    grid_height = None
+    obstacles = None
+    duration_seconds = None
+
     ct = request.headers.get("content-type", "") or ""
     if "application/json" in ct:
         try:
             body = await request.json()
             level_val = max(1, min(5, int(body.get("level", 1))))
+            if body.get("grid_width") is not None:
+                grid_width = max(10, min(150, int(body.get("grid_width"))))
+            if body.get("grid_height") is not None:
+                grid_height = max(10, min(150, int(body.get("grid_height"))))
+            if body.get("obstacles") is not None:
+                obstacles = max(0, min(2000, int(body.get("obstacles"))))
+            if body.get("duration_seconds") is not None:
+                duration_seconds = max(10, min(3600, float(body.get("duration_seconds"))))
+            elif body.get("duration_minutes") is not None:
+                duration_seconds = max(0.5, min(60, float(body.get("duration_minutes")))) * 60
             if not initialized:
                 logins = body.get("logins")
                 if isinstance(logins, list) and len(logins) > 0:
@@ -325,6 +341,16 @@ async def admin_start(request: Request):
         form = await request.form()
         try:
             level_val = max(1, min(5, int(form.get("level", 1))))
+            if form.get("grid_width"):
+                grid_width = max(10, min(150, int(form.get("grid_width"))))
+            if form.get("grid_height"):
+                grid_height = max(10, min(150, int(form.get("grid_height"))))
+            if form.get("obstacles") is not None and form.get("obstacles") != "":
+                obstacles = max(0, min(2000, int(form.get("obstacles"))))
+            if form.get("duration_seconds"):
+                duration_seconds = max(10, min(3600, float(form.get("duration_seconds"))))
+            elif form.get("duration_minutes"):
+                duration_seconds = max(0.5, min(60, float(form.get("duration_minutes")))) * 60
             if not initialized:
                 raw = (form.get("logins") or "").strip()
                 if raw:
@@ -343,7 +369,14 @@ async def admin_start(request: Request):
                 raise HTTPException(status_code=400, detail="При первом запуске нужны logins или player_count")
 
     player_ids = [p["login"] for p in players]
-    await game.start_game(level_val, player_ids)
+    await game.start_game(
+        level_val,
+        player_ids,
+        grid_width=grid_width,
+        grid_height=grid_height,
+        obstacles=obstacles,
+        duration_seconds=duration_seconds,
+    )
     return {"ok": True, "level": level_val, "players": players, "players_initialized": request.app.state.players_initialized}
 
 

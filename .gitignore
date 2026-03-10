@@ -1,6 +1,8 @@
 # Логины/пароли игроков (создаются при первом запуске игры)
 generated_players.json
 credentials.json
+# Сохранённые результаты раундов (кто сколько скушал)
+game_results.json
 
 # Python
 .venv/
